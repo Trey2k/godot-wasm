@@ -1,19 +1,12 @@
-#!python
+Import("env")
+Import('env_modules')
+
 import os
 import shutil
 import re
 from urllib import request
 import tarfile
 
-opts = Variables([], ARGUMENTS)
-
-# Define options
-opts.Add(BoolVariable('download_wasmer', 'Download Wasmer library', 'no'))
-opts.Add('wasmer_version', 'Wasmer library version', 'v3.1.1')
-
-# Standard flags CC, CCX, etc. with options
-env = SConscript('godot-cpp/SConstruct')
-opts.Update(env)
 # Wasmer download
 def download_wasmer(env):
     def download_tarfile(url, dest, rename={}):
@@ -31,7 +24,7 @@ def download_wasmer(env):
         download_tarfile(base_url.format(env['wasmer_version'], 'darwin-amd64'), 'wasmer', {'wasmer/lib/libwasmer.a': 'wasmer/lib/libwasmer.amd64.a'})
         download_tarfile(base_url.format(env['wasmer_version'], 'darwin-arm64'), 'wasmer', {'wasmer/lib/libwasmer.a': 'wasmer/lib/libwasmer.arm64.a'})
         os.system('lipo wasmer/lib/libwasmer*.a -output wasmer/lib/libwasmer.a -create')
-    elif env['platform'] == 'linux':
+    elif env['platform'] == 'linuxbsd':
         download_tarfile(base_url.format(env['wasmer_version'], 'linux-amd64'), 'wasmer')
     elif env['platform'] == 'windows':
         download_tarfile(base_url.format(env['wasmer_version'], 'windows-amd64'), 'wasmer')
@@ -40,21 +33,20 @@ if env['download_wasmer'] or not os.path.isdir('wasmer'):
     shutil.rmtree('wasmer', True)
     download_wasmer(env)
 
+env_wasm = env_modules.Clone()
+
+if env['platform']=='linuxbsd':
+    platform_extension='.a'
+elif env['platform']=='osx':
+    platform_extension='.dylib'
+elif env['platform']=='windows':
+    platform_extension='.lib'
+
 # Explicit static libraries
-wasmer_library = File('wasmer/lib/{}wasmer{}'.format(env['LIBPREFIX'], env.get('LIBWASMERSUFFIX', env['LIBSUFFIX'])))
+wasmer_library = File('wasmer/lib/{}wasmer{}'.format(env['LIBPREFIX'], platform_extension))
 
 # CPP includes and libraries
-env.Append(CPPPATH=['.', 'wasmer/include'])
+env_wasm.Append(CPPPATH=['.', 'wasmer/include'])
 env.Append(LIBS=[wasmer_library])
-env.Append(CPPDEFINES=['GODOT_WASM_EXTENSION'])
 
-# Builders
-library = env.SharedLibrary(
-    "addons/godot-wasm/bin/libgodot-wasm{}{}".format(env["suffix"], env["SHLIBSUFFIX"]),
-    source=Glob('*.cpp'),
-)
-
-Default(library)
-
-env.Help(opts.GenerateHelpText(env))
-
+env_wasm.add_source_files(env.modules_sources, '*.cpp')

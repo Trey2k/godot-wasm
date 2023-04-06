@@ -6,9 +6,11 @@ namespace {
   #else
     #define UNLIKELY(cond) cond
   #endif
-  #define PRINT_ERROR(message) godot::Godot::print_error("Godot Wasm: " + godot::String(message), __func__, __FILE__, __LINE__);
-  #define FAIL(message, ret) do { PRINT_ERROR(message); return ret; } while (0)
+  
+  #define FAIL(message, ret) do { ERR_PRINT(message); return ret; } while (0)
   #define FAIL_IF(cond, message, ret) do { if (UNLIKELY(cond)) FAIL(message, ret); } while (0)
+  
+  #ifdef GODOT_WASM_EXTENSION
   #define NULL_VARIANT godot::Variant()
 
   godot::Variant extract_variant(wasm_val_t value) {
@@ -21,16 +23,31 @@ namespace {
       default: FAIL("Unsupported Wasm type", NULL_VARIANT);
     }
   }
-}
+  #else
+  #define NULL_VARIANT Variant()
 
+  Variant extract_variant(wasm_val_t value) {
+    switch (value.kind) {
+      case WASM_I32: return Variant(value.of.i32);
+      case WASM_I64: return Variant(value.of.i64);
+      case WASM_F32: return Variant(value.of.f32);
+      case WASM_F64: return Variant(value.of.f64);
+      case WASM_ANYREF: if (value.of.ref == NULL) return NULL_VARIANT;
+      default: FAIL("Unsupported Wasm type", NULL_VARIANT);
+    }
+  }
+  #endif
+}
+#ifdef GODOT_WASM_EXTENSION
 namespace godot {
-  void Wasm::_register_methods() {
-    register_method("load", &Wasm::load);
-    register_method("inspect", &Wasm::inspect);
-    register_method("global", &Wasm::global);
-    register_method("function", &Wasm::function);
-    register_method("mem_read", &Wasm::mem_read);
-    register_method("mem_write", &Wasm::mem_write);
+#endif
+  void Wasm::_bind_methods() {
+    ClassDB::bind_method(D_METHOD("load", "bytecode"), &Wasm::load);
+    ClassDB::bind_method(D_METHOD("inspect"), &Wasm::inspect);
+    ClassDB::bind_method(D_METHOD("global", "name"), &Wasm::global);
+    ClassDB::bind_method(D_METHOD("function", "name", "args"), &Wasm::function);
+    ClassDB::bind_method(D_METHOD("mem_read", "type", "offset", "length"), &Wasm::mem_read);
+    ClassDB::bind_method(D_METHOD("mem_write", "value", "offset"), &Wasm::mem_write);
   }
 
   Wasm::Wasm() {
@@ -52,29 +69,29 @@ namespace godot {
 
   void Wasm::_init() { }
 
-  godot_error Wasm::load(PoolByteArray bytecode) {
+  Error Wasm::load(PackedByteArray bytecode) {
     // Load binary
     wasm_byte_vec_t wasm_bytes;
     wasm_byte_vec_new_uninitialized(&wasm_bytes, bytecode.size());
     for (int i = 0; i < bytecode.size(); i++) wasm_bytes.data[i] = bytecode[i];
 
     // Validate binary
-    FAIL_IF(!wasm_module_validate(store, &wasm_bytes), "Invalid binary", GODOT_ERR_INVALID_DATA);
+    FAIL_IF(!wasm_module_validate(store, &wasm_bytes), "Invalid binary", ERR_INVALID_DATA);
 
     // Compile
     module = wasm_module_new(store, &wasm_bytes);
     wasm_byte_vec_delete(&wasm_bytes);
-    FAIL_IF(module == NULL, "Compilation failed", GODOT_ERR_COMPILATION_FAILED);
+    FAIL_IF(module == NULL, "Compilation failed", ERR_COMPILATION_FAILED);
 
     // Instantiate
     wasm_extern_vec_t imports = WASM_EMPTY_VEC;
     instance = wasm_instance_new(store, module, &imports, NULL);
-    FAIL_IF(instance == NULL, "Instantiation failed", GODOT_ERR_CANT_CREATE);
+    FAIL_IF(instance == NULL, "Instantiation failed", ERR_CANT_CREATE);
 
     // Map names to export indices
     map_names();
 
-    return GODOT_OK;
+    return OK;
   }
 
   Dictionary Wasm::inspect() {
@@ -122,7 +139,7 @@ namespace godot {
         case Variant::INT:
           vect.push_back(WASM_I64_VAL((int64_t)val));
           break;
-        case Variant::REAL:
+        case Variant::FLOAT:
           vect.push_back(WASM_F64_VAL((float64_t)val));
           break;
         default: FAIL("Invalid argument type", NULL_VARIANT);
@@ -140,7 +157,7 @@ namespace godot {
     return extract_variant(result);
   }
 
-  Variant Wasm::mem_read(uint8_t type, uint64_t offset, uint32_t length) {
+  Variant Wasm::mem_read(uint32_t type, uint64_t offset, uint32_t length) {
     // Validate memory
     FAIL_IF(memory == NULL, "No memory", NULL_VARIANT);
 
@@ -149,7 +166,7 @@ namespace godot {
       int64_t v;
       memcpy(&v, data, sizeof v);
       return Variant(v);
-    } else if (type == Variant::Type::REAL) {
+    } else if (type == Variant::Type::FLOAT) {
       float64_t v;
       memcpy(&v, data, sizeof v);
       return Variant(v);
@@ -160,26 +177,26 @@ namespace godot {
       std::string v(data, data + length);
       return String(v.c_str());
     } else if (type == Variant::Type::VECTOR2) {
-      real_t x = mem_read(Variant::Type::REAL, offset, length);
-      real_t y = mem_read(Variant::Type::REAL, offset + sizeof(float64_t), length);
+      real_t x = mem_read(Variant::Type::FLOAT, offset, length);
+      real_t y = mem_read(Variant::Type::FLOAT, offset + sizeof(float64_t), length);
       return Vector2(x, y);
     } else if (type == Variant::Type::VECTOR3) {
-      real_t x = mem_read(Variant::Type::REAL, offset, length);
-      real_t y = mem_read(Variant::Type::REAL, offset + sizeof(float64_t), length);
-      real_t z = mem_read(Variant::Type::REAL, offset + sizeof(float64_t) * 2, length);
+      real_t x = mem_read(Variant::Type::FLOAT, offset, length);
+      real_t y = mem_read(Variant::Type::FLOAT, offset + sizeof(float64_t), length);
+      real_t z = mem_read(Variant::Type::FLOAT, offset + sizeof(float64_t) * 2, length);
       return Vector3(x, y, z);
-    } else if (type == Variant::Type::POOL_BYTE_ARRAY) {
-      PoolByteArray v;
+    } else if (type == Variant::Type::PACKED_BYTE_ARRAY) {
+      PackedByteArray v;
       v.resize(length);
-      std::memcpy(v.write().ptr(), data, length);
+      memcpy((void*)v.ptr(), data, length);
       return v;
-    } else if (type == Variant::Type::POOL_INT_ARRAY) {
-      PoolIntArray v;
+    } else if (type == Variant::Type::PACKED_INT64_ARRAY) {
+      PackedInt64Array v;
       for (uint32_t i = 0; i < length; i++) v.append((const int)mem_read(Variant::Type::INT, offset + i * sizeof(int64_t), length));
       return v;
-    } else if (type == Variant::Type::POOL_REAL_ARRAY) {
-      PoolRealArray v;
-      for (uint32_t i = 0; i < length; i++) v.append((real_t)mem_read(Variant::Type::REAL, offset + i * sizeof(float64_t), length));
+    } else if (type == Variant::Type::PACKED_FLOAT64_ARRAY) {
+      PackedFloat64Array v;
+      for (uint32_t i = 0; i < length; i++) v.append((real_t)mem_read(Variant::Type::FLOAT, offset + i * sizeof(float64_t), length));
       return v;
     }
     return NULL_VARIANT;
@@ -195,13 +212,13 @@ namespace godot {
       int64_t v = value;
       byte_t* bytes = reinterpret_cast<byte_t*>(&v);
       size_t s = sizeof v;
-      std::memcpy(data, bytes, s);
+      memcpy(data, bytes, s);
       return offset + s;
-    } else if (type == Variant::Type::REAL) {
+    } else if (type == Variant::Type::FLOAT) {
       float64_t v = value;
       byte_t* bytes = reinterpret_cast<byte_t*>(&v);
       size_t s = sizeof v;
-      std::memcpy(data, bytes, s);
+      memcpy(data, bytes, s);
       return offset + s;
     } else if (type == Variant::Type::BOOL) {
       bool v = value;
@@ -212,7 +229,7 @@ namespace godot {
       CharString c = v.utf8();
       const byte_t* bytes = c.get_data();
       size_t s = c.length();
-      std::memcpy(data, bytes, s);
+      memcpy(data, bytes, s);
       return offset + s;
     } else if (type == Variant::Type::VECTOR2) {
       Vector2 v = value;
@@ -226,19 +243,19 @@ namespace godot {
       offset = mem_write(Variant(v.z), offset);
       return offset;
     } else if (type == Variant::Type::ARRAY ||
-              type == Variant::Type::POOL_INT_ARRAY ||
-              type == Variant::Type::POOL_REAL_ARRAY ||
-              type == Variant::Type::POOL_STRING_ARRAY ||
-              type == Variant::Type::POOL_VECTOR2_ARRAY ||
-              type == Variant::Type::POOL_VECTOR3_ARRAY) {
+             type == Variant::Type::PACKED_INT64_ARRAY ||
+             type == Variant::Type::PACKED_FLOAT64_ARRAY ||
+             type == Variant::Type::PACKED_STRING_ARRAY ||
+             type == Variant::Type::PACKED_VECTOR2_ARRAY ||
+             type == Variant::Type::PACKED_VECTOR3_ARRAY) {
       Array v = value;
       for (int i = 0; i < v.size(); i++) offset = mem_write(v[i], offset);
       return offset;
-    } else if (type == Variant::Type::POOL_BYTE_ARRAY) {
-      PoolByteArray v = value;
-      const uint8_t* bytes = v.read().ptr();
+    } else if (type == Variant::Type::PACKED_BYTE_ARRAY) {
+      PackedByteArray v = value;
+      const uint8_t* bytes = v.ptr();
       size_t s = v.size();
-      std::memcpy(data, bytes, s);
+      memcpy(data, bytes, s);
       return offset + s;
     }
     return offset;
@@ -269,4 +286,6 @@ namespace godot {
       }
     }
   }
+#ifdef GODOT_WASM_EXTENSION
 }
+#endif

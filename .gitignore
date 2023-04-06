@@ -1,9 +1,11 @@
+__pycache__
 .DS_Store
 .vscode/
 .sconsign.dblite
 wasmer/
 addons.zip
 *.os
+*.o
 *.obj
 *.pdb
 *.idb
