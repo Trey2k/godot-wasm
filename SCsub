@@ -1,6 +1,7 @@
 # Import env and create module-specific clone
 Import('env')
-module_env = env.Clone()
+Import('env_modules')
+module_env = env_modules.Clone()
 
 # Check platform specifics
 if env['platform']=='linuxbsd':
